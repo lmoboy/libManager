@@ -1,5 +1,7 @@
 -- @version alpha-1.0
 -- @location /libs/
+--
+-- authors: smarrtie, mizly
 -------------------------TYPES-------------------------
 
 
@@ -67,13 +69,41 @@ end
 function libManager.getLocalLibs()
     for _, file in pairs(libs) do
         --- VERY CPU INTENSIVE EVEN WITH THREADS
-        local threadId = threads.startThread(function ()
-            local sumhex = md5.sumhexa(files.readFile(libDir..file))
-            table.insert(libManager.localLibs, LibData.new(file, "sumhex", libDir, nil, false, false))
+        local threadId = threads.startThread(function()
+            local sumhex = md5.sumhexa(files.readFile(libDir .. file))
+            table.insert(libManager.localLibs, LibData.new(file, sumhex, libDir, nil, false, false))
         end)
         table.insert(runningThreads, threadId)
     end
 end
+
+function libManager.updateLibSum(libData) --probably best to call on callback when new/updated file downloads to keep track at runtime
+    threads.startThread(function ()
+        local filePath = libDir .. libData.name
+        local fileContent = files.readFile(filePath)
+
+        if not fileContent then
+            print("Error: Could not read file " .. libData.name)
+            return
+        end
+
+        local sumhex = md5.sumhexa(fileContent)
+
+        local found = false
+        for i, lib in ipairs(libManager.localLibs) do
+            if lib.name == libData.name then
+                libManager.localLibs[i] = LibData.new(libData.name, sumhex, libDir, nil, false, false)
+                found = true
+                break
+            end
+        end
+
+        if not found then
+            table.insert(libManager.localLibs, LibData.new(libData.name, sumhex, libDir, nil, false, false))
+        end
+    end)
+end
+
 --- @return boolean success did the fetch complete
 function libManager.fetchRemoteLibs()
     local response = http.get_async_callback(
@@ -119,6 +149,7 @@ function libManager.isLibInstalled(libData)
         if (lib.name == libData.name) then
             if imgui.button("Update!" .. uid) then
                 player.addMessage("update lib : " .. libData.name)
+                player.addMessage("md5: "..lib.md5.."\nmd5 remote: "..libData.md5)
                 -- clearly to each button we need to add a method
             end
             return
