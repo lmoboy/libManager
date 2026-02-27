@@ -34,9 +34,10 @@ local md5 = require("md5")
 local smarrtieUtils = require("smarrtieUtils")
 local downloadFile = require("downloadFile")
 ------------------------CONSTANTS-----------------------
-local libDir = files.getInstanceDir() .. "/config/hypixelcry/scripts/libs/"
-local dataDir = files.getInstanceDir() .. "/config/hypixelcry/scripts/data/"
-local libData = files.getInstanceDir() .. "/config/hypixelcry/scripts/data/packages.json"
+local modDir = files.getInstanceDir() .. "/config/hypixelcry/scripts"
+local libDir = modDir.."/libs/"
+local dataDir = modDir.."/data/"
+local libData = modDir.."/data/packages.json"
 local libs = files.getFiles(libDir)
 -------------------------VALUES-------------------------
 local runningThreads = {}
@@ -55,7 +56,7 @@ local function unpack_utf(t) --YES this was stolen from stackoverflow
   return table.concat(bytearr)
 end
 
-local function killThreads()
+local function killThreads() -- kinda useless since thread detach is handled within the mod but this might help with low fps if md5 is too heavy in some cases
     for _, id in pairs(runningThreads) do
         if threads.isAlive(id) then
             threads.interruptThread(id)
@@ -64,15 +65,16 @@ local function killThreads()
 end
 
 function libManager.getLocalLibs()
-    local localFiles = files.getFiles(libDir)
-    for _, file in pairs(localFiles) do
-        threads.startThread(function ()
+    for _, file in pairs(libs) do
+        --- VERY CPU INTENSIVE EVEN WITH THREADS
+        local threadId = threads.startThread(function ()
             local sumhex = md5.sumhexa(files.readFile(libDir..file))
-            table.insert(libManager.localLibs, LibData.new(file, sumhex, nil, nil))
+            table.insert(libManager.localLibs, LibData.new(file, "sumhex", libDir, nil, false, false))
         end)
+        table.insert(runningThreads, threadId)
     end
 end
-
+--- @return boolean success did the fetch complete
 function libManager.fetchRemoteLibs()
     local response = http.get_async_callback(
         "https://raw.githubusercontent.com/lmoboy/hypixel-cry-libs/refs/heads/main/registry.json",
@@ -83,9 +85,8 @@ function libManager.fetchRemoteLibs()
             else
                 libManager.error = ""
                 local parsed = json.parse(unpack_utf(resp))
-                libManager.remoteLibs = parsed.libs -- array
                 for _, remoteLib in pairs(parsed.libs) do
-                    table.insert(libManager.remoteLibs, LibData.new(remoteLib.name, remoteLib.md5, remoteLib.loc, remoteLib.ver))
+                    table.insert(libManager.remoteLibs, LibData.new(remoteLib.name, remoteLib.md5, remoteLib.loc, remoteLib.ver, nil, nil))
                 end
                 return true
             end
@@ -97,32 +98,82 @@ function libManager.fetchRemoteLibs()
     return false
 end
 
+function libManager.isLibInstalled(libData)
+    local uid = "##" .. libData.name 
+
+    for _, lib in pairs(libManager.localLibs) do
+        if (lib.name == libData.name) and (lib.md5 == libData.md5) then
+            imgui.text("Latest")
+            -- clearly to each button we need to add a method
+            return
+        end
+
+        if (lib.md5 == libData.md5) then
+            if imgui.button("Sum matches, rename?" .. uid) then
+                player.addMessage("rename file : " .. libData.name)
+                -- clearly to each button we need to add a method
+            end
+            return
+        end
+
+        if (lib.name == libData.name) then
+            if imgui.button("Update!" .. uid) then
+                player.addMessage("update lib : " .. libData.name)
+                -- clearly to each button we need to add a method
+            end
+            return
+        end
+    end
+
+    if imgui.button("Download" .. uid) then
+        player.addMessage("Download lib : " .. libData.name)
+        -- clearly to each button we need to add a method
+    end
+end
+
+
+
 libManager.getLocalLibs()
+libManager.fetchRemoteLibs()
 -------------------------IMGUI-------------------------
 
-player.addToast("[Lib Manager]", "Loaded successfully", 1)
+player.addToast("[Lib Manager]", "Loaded successfully", 100)
 
 registerImGuiRenderEvent(function()
     if imgui.begin("Lib Manager") then
-        if imgui.button("Fetch remote libraries") then
-            local succ = libManager.fetchRemoteLibs()
-            if not succ then
-                imgui.bulletText(libManager.error)
+        -- if imgui.button("Fetch remote libraries") then
+        --     local succ = libManager.fetchRemoteLibs()
+        --     if not succ then
+        --         imgui.bulletText(libManager.error)
+        --     end
+        -- end
+        if imgui.beginTabBar("##tabBar") then
+            if imgui.beginTabItem("Remote") then
+                if #libManager.remoteLibs > 0 then
+                    for i, lib in pairs(libManager.remoteLibs) do
+                        imgui.text(lib.name)
+                        imgui.sameLine(0, 0)
+                        imgui.text(" - ")
+                        imgui.sameLine(0, 0)
+                        imgui.text(lib.ver)
+                        libManager.isLibInstalled(lib)
+                    end
+                end
+                imgui.endTabItem()
+            end
+            if imgui.beginTabItem("Local") then
+                if #libManager.localLibs > 0 then
+                    for i, lib in pairs(libManager.localLibs) do
+                        imgui.text(lib.name)
+                        imgui.sameLine(0, 0)
+                        imgui.text(" - ")
+                        imgui.sameLine(0, 0)
+                        imgui.text(lib.ver or "NULL")
+                    end
+                end
+                imgui.endTabItem()
             end
         end
-        if #libManager.remoteLibs > 0 then
-            for i, lib in pairs(libManager.remoteLibs) do
-                imgui.text(lib.name)
-                imgui.sameLine(0, 0)
-                imgui.text(" - ")
-                imgui.sameLine(0, 0)
-                imgui.text(lib.ver)
-            end
-        end
-        imgui.beginTabBar("tab bar")
-        imgui.beginTabItem("tab item")
-        
-        imgui.endTabItem()
         imgui.endTabBar()
     end
     imgui.endBegin()
