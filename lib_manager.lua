@@ -27,7 +27,6 @@ function LibData.new(name, md5, loc, ver)
 end
 
 
-
 --------------------------LIBS--------------------------
 local files = require("files")
 local md5 = require("md5")
@@ -100,8 +99,13 @@ function libManager.getLocalLibs() -- this will get repurposed for forceful file
             local formFile = formatted.."/"..file
             if string.match(formFile, ".lua") then
                 local threadId = threads.startThread(function()
-                    local sumhex = md5.sumhexa(files.readFile(formFile))
-                    table.insert(libManager.localLibs, LibData.new(file, sumhex, "/"..libs.."/", nil))
+                    local filec = files.readFile(formFile)
+                    local sumhex = md5.sumhexa(filec)
+                    local version = filec:match("%-%-%s*@version%s+([^\r\n]+)")
+                    version = version and version:gsub("%s+$", "") or "alpha-1.0"
+                    local location = filec:match("%-%-%s*@location%s+([^\r\n]+)")
+                    location = location and location:gsub("%s+$", "") or ("/" .. dirName .. "/")
+                    table.insert(libManager.localLibs, LibData.new(file, sumhex, location, version))
                 end)
                 table.insert(runningThreads, threadId)
             end
@@ -168,11 +172,14 @@ function libManager.download(libData)
     -- All files in the repo are in the 'src' directory, regardless of local 'loc'
     local url = remoteRepo .. "/src/" .. libData.name
     local path = modDir .. loc .. libData.name
-    
+
     -- player.addMessage("Downloading " .. libData.name .. "...")
     downloadFile.download(url, path, function(success, msg)
         if success then
             player.addToast("[Lib Manager]", "Downloaded " .. libData.name, 100)
+            -- player.addMessage("[Lib Manager] Downloaded " .. libData.name .. "\n md5: " .. libData.md5)
+            -- player.addMessage("[Lib Manager] Checking sum :"..)
+
             libManager.updateLibSum(libData)
         else
             player.addMessage("§cFailed to download " .. libData.name .. ": " .. msg)
@@ -181,7 +188,7 @@ function libManager.download(libData)
 end
 
 function libManager.libButton(libData)
-    local uid = "##" .. libData.name 
+    local uid = "##" .. libData.name
 
     for _, lib in pairs(libManager.localLibs) do
         if (lib.name == libData.name) and (lib.md5 == libData.md5) then
@@ -217,49 +224,133 @@ player.addToast("[Lib Manager]", "Loaded successfully", 100)
 
 local values={}
 values.search = ""
-
+values.downloadModal = false
+values.viewModal = false
+values.warningModal = true
 registerImGuiRenderEvent(function()
-    if imgui.begin("Lib Manager") then
-        if imgui.beginTabBar("##tabBar") then
-            if imgui.beginTabItem("Remote") then
-                local c, v = imgui.inputText("Search for libs...", values.search)
-                if c then values.search = v end
-                if #libManager.remoteLibs > 0 then
-                    for i, lib in pairs(libManager.remoteLibs) do
-                        if string.find(lib.name, values.search) then
-                            imgui.text(lib.name)
-                            imgui.sameLine(0, 0)
-                            imgui.text(" - ")
-                            imgui.sameLine(0, 0)
-                            imgui.text(lib.ver)
-                            libManager.libButton(lib)
-                            imgui.separator()
-                        end
-                    end
+    imgui.beginMainMenuBar()
+    if imgui.beginMenu("Libraries", true) then
+        if imgui.menuItem("View libs", nil, false, true) then 
+            values.viewModal = true
+        end
+        if imgui.menuItem("Download", nil, false, true) then
+            values.downloadModal = true
+        end
+        imgui.menuItem("Update all", nil, false, true)
+        if imgui.menuItem("Verify integrity", nil, false, true) then
+            libManager.getLocalLibs()
+            print("verifying libs")
+        end
+        imgui.menuItem("Exit", nil, false, true)
+        imgui.endMenu()
+    end
+    if values.downloadModal then
+        values.downloadModal = false
+        imgui.openPopup("Download libs", 0)
+    end
+    if values.viewModal then
+        values.viewModal = false
+        imgui.openPopup("Library list", 0)
+    end
+    if values.warningModal then
+        values.warningModal = false
+        imgui.openPopup("WARNING")
+    end
+    if imgui.beginPopupModal("Download libs") then
+        if imgui.button("Close") then
+            imgui.closeCurrentPopup()
+        end
+        local c, v = imgui.inputText("Search for libs...", values.search)
+        if c then values.search = v end
+        if #libManager.remoteLibs > 0 then
+            for i, lib in pairs(libManager.remoteLibs) do
+                if string.find(lib.name, values.search) then
+                    imgui.text(lib.name)
+                    imgui.sameLine(0, 0)
+                    imgui.text(" - ")
+                    imgui.sameLine(0, 0)
+                    libManager.libButton(lib)
+                    imgui.separator()
                 end
-                imgui.endTabItem()
-            end
-            if imgui.beginTabItem("Local") then
-                if #libManager.localLibs > 0 then
-                    for i, lib in pairs(libManager.localLibs) do
-                        imgui.text(lib.name)
-                        imgui.sameLine(0, 0)
-                        imgui.text(" - ")
-                        imgui.sameLine(0, 0)
-                        imgui.text(lib.ver or "NULL")
-                    end
-                end
-                imgui.endTabItem()
-            end
-            if imgui.beginTabItem("Dev")then
-                imgui.bulletText("This tab is only for developers and debugging purposes")
-                imgui.text("Playing around with the settings and functions here can\ncause some minor inconveniences")
-                imgui.endTabItem()
             end
         end
-        imgui.endTabBar()
+        imgui.endPopup()
     end
-    imgui.endBegin()
+    if imgui.beginPopupModal("Library list") then
+        if imgui.button("Close") then
+            imgui.closeCurrentPopup()
+        end
+        if #libManager.localLibs > 0 then
+            for i, lib in pairs(libManager.localLibs) do
+                imgui.text(lib.name)
+                imgui.sameLine(0, 0)
+                imgui.text(" - ")
+                imgui.sameLine(0, 0)
+                imgui.text(lib.ver or "NULL")
+            end
+        end
+        imgui.endPopup()
+    end
+    
+    if imgui.beginPopupModal("WARNING") then
+        imgui.text("The libManager is provided as is, it will be periodically updated.")
+        imgui.text("The script itself downloads and \"manages\" your libraries, aka has access to the internet and filesystem")
+        imgui.text("If you got this script from anywhere but the original hypixel cry discord remove it.")
+        imgui.separator()
+        if imgui.button("I understand!") then
+            imgui.closeCurrentPopup()
+        end
+        imgui.sameLine()
+        if imgui.button("I don't want this!") then
+            player.sendCommand("/lua unload lib_manager")
+        end
+        imgui.endPopup()
+    end
+    
+    
+    
+    imgui.endMainMenuBar()
+
+ 
+
+        --     if imgui.beginTabBar("##tabBar") then
+        --         if imgui.beginTabItem("Remote") then
+        --             local c, v = imgui.inputText("Search for libs...", values.search)
+        --             if c then values.search = v end
+        --             if #libManager.remoteLibs > 0 then
+        --                 for i, lib in pairs(libManager.remoteLibs) do
+        --                     if string.find(lib.name, values.search) then
+        --                         imgui.text(lib.name)
+        --                         imgui.sameLine(0, 0)
+        --                         imgui.text(" - ")
+        --                         imgui.sameLine(0, 0)
+        --                         libManager.libButton(lib)
+        --                         imgui.separator()
+        --                     end
+        --                 end
+        --             end
+        --             imgui.endTabItem()
+        --         end
+        --         if imgui.beginTabItem("Local") then
+        --             if #libManager.localLibs > 0 then
+        --                 for i, lib in pairs(libManager.localLibs) do
+        --                     imgui.text(lib.name)
+        --                     imgui.sameLine(0, 0)
+        --                     imgui.text(" - ")
+        --                     imgui.sameLine(0, 0)
+        --                     imgui.text(lib.ver or "NULL")
+        --                 end
+        --             end
+        --             imgui.endTabItem()
+        --         end
+        --         if imgui.beginTabItem("Dev")then
+        --             imgui.bulletText("This tab is only for developers and debugging purposes")
+        --             imgui.text("Playing around with the settings and functions here can\ncause some minor inconveniences")
+        --             imgui.endTabItem()
+        --         end
+        --     end
+        --     imgui.endTabBar()
+
 end)
 
 
