@@ -1,5 +1,5 @@
 -- @version alpha-1.0
--- @location /libs/
+-- @location /
 --
 -- authors: smarrtie, mizly
 -------------------------TYPES-------------------------
@@ -17,14 +17,12 @@
 local LibData = {}
 LibData.__index = LibData
 
-function LibData.new(name, md5, loc, ver, matchName, matchSum)
+function LibData.new(name, md5, loc, ver)
     local self = setmetatable({}, LibData)
     self.name = name
     self.md5 = md5
-    self.loc = loc or nil
-    self.ver = ver or nil
-    self.matchName = matchName or nil
-    self.matchSum = matchSum or nil
+    self.loc = loc or "/libs/"
+    self.ver = ver or "unknown"
     return self
 end
 
@@ -37,10 +35,10 @@ local smarrtieUtils = require("smarrtieUtils")
 local downloadFile = require("downloadFile")
 ------------------------CONSTANTS-----------------------
 local modDir = files.getInstanceDir() .. "/config/hypixelcry/scripts"
-local libDir = modDir.."/libs/"
 local dataDir = modDir.."/data/"
-local libData = modDir.."/data/packages.json"
-local libs = files.getFiles(libDir)
+local libData = dataDir.."packages.json"
+
+local remoteRepo = "https://raw.githubusercontent.com/lmoboy/hypixel-cry-libs/main"
 -------------------------VALUES-------------------------
 local runningThreads = {}
 local libManager = {}
@@ -66,20 +64,55 @@ local function killThreads() -- kinda useless since thread detach is handled wit
     end
 end
 
-function libManager.getLocalLibs()
-    for _, file in pairs(libs) do
-        --- VERY CPU INTENSIVE EVEN WITH THREADS
-        local threadId = threads.startThread(function()
-            local sumhex = md5.sumhexa(files.readFile(libDir .. file))
-            table.insert(libManager.localLibs, LibData.new(file, sumhex, libDir, nil, false, false))
-        end)
-        table.insert(runningThreads, threadId)
+function libManager.saveLibData()
+    local succ = files.writeFile(libData, json.stringify({ libs = libManager.localLibs }))
+    if succ then libManager.readLibData() end
+end
+
+function libManager.readLibData()
+    local data = files.readFile(libData)
+    if not data then libManager.getLocalLibs() return end
+    local parsed = json.parse(data)
+    if not parsed then libManager.getLocalLibs() return end
+    local existingLibs = {}
+    local needsSave = false
+
+    for _, lib in ipairs(parsed.libs) do
+        local loc = (lib.loc or "/libs/"):gsub("%s+", "")
+        local fullPath = modDir .. loc .. lib.name
+        if files.readFile(fullPath) then
+            table.insert(existingLibs, lib)
+        else
+            needsSave = true
+        end
+    end
+
+    libManager.localLibs = existingLibs
+    if needsSave then
+        libManager.saveLibData()
+    end
+end
+
+function libManager.getLocalLibs() -- this will get repurposed for forceful file integrity check
+    for _, libs in pairs(files.getDirectories(modDir)) do
+        local formatted = modDir.."/"..libs
+        for _, file in pairs(files.getFiles(formatted)) do
+            local formFile = formatted.."/"..file
+            if string.match(formFile, ".lua") then
+                local threadId = threads.startThread(function()
+                    local sumhex = md5.sumhexa(files.readFile(formFile))
+                    table.insert(libManager.localLibs, LibData.new(file, sumhex, "/"..libs.."/", nil))
+                end)
+                table.insert(runningThreads, threadId)
+            end
+        end
     end
 end
 
 function libManager.updateLibSum(libData) --probably best to call on callback when new/updated file downloads to keep track at runtime
     threads.startThread(function ()
-        local filePath = libDir .. libData.name
+        local loc = (libData.loc or "/libs/"):gsub("%s+", "")
+        local filePath = modDir .. loc .. libData.name
         local fileContent = files.readFile(filePath)
 
         if not fileContent then
@@ -92,14 +125,16 @@ function libManager.updateLibSum(libData) --probably best to call on callback wh
         local found = false
         for i, lib in ipairs(libManager.localLibs) do
             if lib.name == libData.name then
-                libManager.localLibs[i] = LibData.new(libData.name, sumhex, libDir, nil, false, false)
+                libManager.localLibs[i] = LibData.new(libData.name, sumhex, loc, libData.ver)
+                libManager.saveLibData()
                 found = true
                 break
             end
         end
 
         if not found then
-            table.insert(libManager.localLibs, LibData.new(libData.name, sumhex, libDir, nil, false, false))
+            table.insert(libManager.localLibs, LibData.new(libData.name, sumhex, loc, libData.ver))
+            libManager.saveLibData()
         end
     end)
 end
@@ -107,7 +142,7 @@ end
 --- @return boolean success did the fetch complete
 function libManager.fetchRemoteLibs()
     local response = http.get_async_callback(
-        "https://raw.githubusercontent.com/lmoboy/hypixel-cry-libs/refs/heads/main/registry.json",
+        remoteRepo .. "/registry.json",
         function(resp, err)
             if err then
                 libManager.error = err
@@ -116,7 +151,7 @@ function libManager.fetchRemoteLibs()
                 libManager.error = ""
                 local parsed = json.parse(unpack_utf(resp))
                 for _, remoteLib in pairs(parsed.libs) do
-                    table.insert(libManager.remoteLibs, LibData.new(remoteLib.name, remoteLib.md5, remoteLib.loc, remoteLib.ver, nil, nil))
+                    table.insert(libManager.remoteLibs, LibData.new(remoteLib.name, remoteLib.md5, remoteLib.location, remoteLib.ver, nil, nil))
                 end
                 return true
             end
@@ -128,13 +163,29 @@ function libManager.fetchRemoteLibs()
     return false
 end
 
-function libManager.isLibInstalled(libData)
+function libManager.download(libData)
+    local loc = (libData.loc or "/libs/"):gsub("%s+", "")
+    -- All files in the repo are in the 'src' directory, regardless of local 'loc'
+    local url = remoteRepo .. "/src/" .. libData.name
+    local path = modDir .. loc .. libData.name
+    
+    -- player.addMessage("Downloading " .. libData.name .. "...")
+    downloadFile.download(url, path, function(success, msg)
+        if success then
+            player.addToast("[Lib Manager]", "Downloaded " .. libData.name, 100)
+            libManager.updateLibSum(libData)
+        else
+            player.addMessage("§cFailed to download " .. libData.name .. ": " .. msg)
+        end
+    end)
+end
+
+function libManager.libButton(libData)
     local uid = "##" .. libData.name 
 
     for _, lib in pairs(libManager.localLibs) do
         if (lib.name == libData.name) and (lib.md5 == libData.md5) then
             imgui.text("Latest")
-            -- clearly to each button we need to add a method
             return
         end
 
@@ -148,46 +199,42 @@ function libManager.isLibInstalled(libData)
 
         if (lib.name == libData.name) then
             if imgui.button("Update!" .. uid) then
-                player.addMessage("update lib : " .. libData.name)
-                player.addMessage("md5: "..lib.md5.."\nmd5 remote: "..libData.md5)
-                -- clearly to each button we need to add a method
+                libManager.download(libData)
             end
             return
         end
     end
 
     if imgui.button("Download" .. uid) then
-        player.addMessage("Download lib : " .. libData.name)
-        -- clearly to each button we need to add a method
+        libManager.download(libData)
     end
 end
 
-
-
-libManager.getLocalLibs()
+libManager.readLibData()
 libManager.fetchRemoteLibs()
 -------------------------IMGUI-------------------------
-
 player.addToast("[Lib Manager]", "Loaded successfully", 100)
+
+local values={}
+values.search = ""
 
 registerImGuiRenderEvent(function()
     if imgui.begin("Lib Manager") then
-        -- if imgui.button("Fetch remote libraries") then
-        --     local succ = libManager.fetchRemoteLibs()
-        --     if not succ then
-        --         imgui.bulletText(libManager.error)
-        --     end
-        -- end
         if imgui.beginTabBar("##tabBar") then
             if imgui.beginTabItem("Remote") then
+                local c, v = imgui.inputText("Search for libs...", values.search)
+                if c then values.search = v end
                 if #libManager.remoteLibs > 0 then
                     for i, lib in pairs(libManager.remoteLibs) do
-                        imgui.text(lib.name)
-                        imgui.sameLine(0, 0)
-                        imgui.text(" - ")
-                        imgui.sameLine(0, 0)
-                        imgui.text(lib.ver)
-                        libManager.isLibInstalled(lib)
+                        if string.find(lib.name, values.search) then
+                            imgui.text(lib.name)
+                            imgui.sameLine(0, 0)
+                            imgui.text(" - ")
+                            imgui.sameLine(0, 0)
+                            imgui.text(lib.ver)
+                            libManager.libButton(lib)
+                            imgui.separator()
+                        end
                     end
                 end
                 imgui.endTabItem()
@@ -204,6 +251,11 @@ registerImGuiRenderEvent(function()
                 end
                 imgui.endTabItem()
             end
+            if imgui.beginTabItem("Dev")then
+                imgui.bulletText("This tab is only for developers and debugging purposes")
+                imgui.text("Playing around with the settings and functions here can\ncause some minor inconveniences")
+                imgui.endTabItem()
+            end
         end
         imgui.endTabBar()
     end
@@ -214,6 +266,23 @@ end)
 
 
 -------------------------HOOKS--------------------------
+local timeout = 0
+local attempts = 0
+registerClientTick(function ()
+    if #libManager.remoteLibs == 0 then
+        timeout = timeout + 1
+        if timeout >= 600 then
+            attempts = attempts + 1
+            timeout = 0
+            player.addMessage("Failed to fetch, attempt: "..attempts)
+            -- libManager.fetchRemoteLibs()
+        end
+        if attempts >= 3 then
+            player.sendCommand("/lua load lib_manager")
+        end
+    end
+end)
+
 
 registerClientTickPre(function()
     if smarrtieUtils.getFPS() <= 10 then
