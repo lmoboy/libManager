@@ -1,4 +1,4 @@
--- @version alpha-1.0
+-- @version alpha-1.2
 -- @location /
 --
 -- authors: smarrtie, mizly
@@ -63,16 +63,30 @@ local function killThreads() -- kinda useless since thread detach is handled wit
     end
 end
 
+local function removeDuplicates()
+    local hash = {}
+    local res = {}
+    
+    for _,v in ipairs(libManager.localLibs) do
+       if (not hash[v]) then
+           res[#res+1] = v -- you could print here instead of saving to result table if you wanted
+           hash[v] = true
+       end
+    end
+end
+
+
 function libManager.saveLibData()
+    removeDuplicates()
     local succ = files.writeFile(libData, json.stringify({ libs = libManager.localLibs }))
     if succ then libManager.readLibData() end
 end
 
 function libManager.readLibData()
     local data = files.readFile(libData)
-    if not data then libManager.getLocalLibs() return end
+    if not data then libManager.getLocalLibs() player.addMessage("[Lib Manager] Could not read packages.json?") return end
     local parsed = json.parse(data)
-    if not parsed then libManager.getLocalLibs() return end
+    if not parsed then libManager.getLocalLibs() return player.addMessage("[Lib Manager] Could not parse packages.json (corrupted?)") end
     local existingLibs = {}
     local needsSave = false
 
@@ -88,13 +102,14 @@ function libManager.readLibData()
 
     libManager.localLibs = existingLibs
     if needsSave then
+        player.addMessage("[Lib Manager] Library data out of date!\nSaving....")
         libManager.saveLibData()
     end
 end
 
 function libManager.getLocalLibs() -- this will get repurposed for forceful file integrity check
-    for _, libs in pairs(files.getDirectories(modDir)) do
-        local formatted = modDir.."/"..libs
+    for _, lib in pairs(files.getDirectories(modDir)) do
+        local formatted = modDir.."/"..lib
         for _, file in pairs(files.getFiles(formatted)) do
             local formFile = formatted.."/"..file
             if string.match(formFile, ".lua") then
@@ -105,7 +120,8 @@ function libManager.getLocalLibs() -- this will get repurposed for forceful file
                     version = version and version:gsub("%s+$", "") or "alpha-1.0"
                     local location = filec:match("%-%-%s*@location%s+([^\r\n]+)")
                     location = location and location:gsub("%s+$", "") or ("/" .. dirName .. "/")
-                    table.insert(libManager.localLibs, LibData.new(file, sumhex, location, version))
+                    libManager.updateLibSum(LibData.new(file,sumhex,location,version ))
+                    -- table.insert(libManager.localLibs, LibData.new(file, sumhex, location, version))
                 end)
                 table.insert(runningThreads, threadId)
             end
@@ -120,7 +136,7 @@ function libManager.updateLibSum(libData) --probably best to call on callback wh
         local fileContent = files.readFile(filePath)
 
         if not fileContent then
-            print("Error: Could not read file " .. libData.name)
+            libManager.error = ("Error: Could not read file " .. libData.name)
             return
         end
 
@@ -131,6 +147,7 @@ function libManager.updateLibSum(libData) --probably best to call on callback wh
             if lib.name == libData.name then
                 libManager.localLibs[i] = LibData.new(libData.name, sumhex, loc, libData.ver)
                 libManager.saveLibData()
+                player.addMessage("[Lib Manager] Library " .. libData.name .. " data updated.")
                 found = true
                 break
             end
@@ -139,6 +156,8 @@ function libManager.updateLibSum(libData) --probably best to call on callback wh
         if not found then
             table.insert(libManager.localLibs, LibData.new(libData.name, sumhex, loc, libData.ver))
             libManager.saveLibData()
+            player.addMessage("[Lib Manager] New library found " .. libData.name)
+
         end
     end)
 end
@@ -177,7 +196,7 @@ function libManager.download(libData)
     downloadFile.download(url, path, function(success, msg)
         if success then
             player.addToast("[Lib Manager]", "Downloaded " .. libData.name, 100)
-            -- player.addMessage("[Lib Manager] Downloaded " .. libData.name .. "\n md5: " .. libData.md5)
+            player.addMessage("[Lib Manager] Downloaded " .. libData.name)
             -- player.addMessage("[Lib Manager] Checking sum :"..)
 
             libManager.updateLibSum(libData)
@@ -226,7 +245,8 @@ local values={}
 values.search = ""
 values.downloadModal = false
 values.viewModal = false
-values.warningModal = true
+values.warningModal = not files.readFile(libData) and true or false
+values.isOpen={}
 registerImGuiRenderEvent(function()
     imgui.beginMainMenuBar()
     if imgui.beginMenu("Libraries", true) then
@@ -236,12 +256,18 @@ registerImGuiRenderEvent(function()
         if imgui.menuItem("Download", nil, false, true) then
             values.downloadModal = true
         end
-        imgui.menuItem("Update all", nil, false, true)
+        if imgui.menuItem("Update all", nil, false, true) then
+            for _,lib in pairs(libManager.localLibs) do
+                libManager.download(lib)
+            end
+        end
         if imgui.menuItem("Verify integrity", nil, false, true) then
             libManager.getLocalLibs()
-            print("verifying libs")
+            player.addMessage("[Lib Manager] Verifying libraries (CPU INTENSIVE)")
         end
-        imgui.menuItem("Exit", nil, false, true)
+        if imgui.menuItem("Exit", nil, false, true) then
+            player.sendCommand("/lua unload lib_manager")
+        end
         imgui.endMenu()
     end
     if values.downloadModal then
@@ -291,7 +317,7 @@ registerImGuiRenderEvent(function()
         end
         imgui.endPopup()
     end
-    
+
     if imgui.beginPopupModal("WARNING") then
         imgui.text("The libManager is provided as is, it will be periodically updated.")
         imgui.text("The script itself downloads and \"manages\" your libraries, aka has access to the internet and filesystem")
@@ -306,51 +332,7 @@ registerImGuiRenderEvent(function()
         end
         imgui.endPopup()
     end
-    
-    
-    
     imgui.endMainMenuBar()
-
- 
-
-        --     if imgui.beginTabBar("##tabBar") then
-        --         if imgui.beginTabItem("Remote") then
-        --             local c, v = imgui.inputText("Search for libs...", values.search)
-        --             if c then values.search = v end
-        --             if #libManager.remoteLibs > 0 then
-        --                 for i, lib in pairs(libManager.remoteLibs) do
-        --                     if string.find(lib.name, values.search) then
-        --                         imgui.text(lib.name)
-        --                         imgui.sameLine(0, 0)
-        --                         imgui.text(" - ")
-        --                         imgui.sameLine(0, 0)
-        --                         libManager.libButton(lib)
-        --                         imgui.separator()
-        --                     end
-        --                 end
-        --             end
-        --             imgui.endTabItem()
-        --         end
-        --         if imgui.beginTabItem("Local") then
-        --             if #libManager.localLibs > 0 then
-        --                 for i, lib in pairs(libManager.localLibs) do
-        --                     imgui.text(lib.name)
-        --                     imgui.sameLine(0, 0)
-        --                     imgui.text(" - ")
-        --                     imgui.sameLine(0, 0)
-        --                     imgui.text(lib.ver or "NULL")
-        --                 end
-        --             end
-        --             imgui.endTabItem()
-        --         end
-        --         if imgui.beginTabItem("Dev")then
-        --             imgui.bulletText("This tab is only for developers and debugging purposes")
-        --             imgui.text("Playing around with the settings and functions here can\ncause some minor inconveniences")
-        --             imgui.endTabItem()
-        --         end
-        --     end
-        --     imgui.endTabBar()
-
 end)
 
 
